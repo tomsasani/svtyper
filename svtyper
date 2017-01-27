@@ -551,7 +551,6 @@ class Library(object):
 
         # get readgroups that comprise the library
         readgroups = []
-        # NOTE: changed this
         for r in bam.header['RG']:
             try:
                 in_lib = r['LB'] == lib_name
@@ -581,9 +580,7 @@ class Library(object):
         for read in self.bam.fetch():
             if read_counter == max_count:
                 break
-            # NOTE: changed this
             if read.get_tag('RG') in self.readgroups:
-            #if 'ont' in self.readgroups:
                 lib_counter += 1
             read_counter += 1
 
@@ -597,7 +594,6 @@ class Library(object):
         self.read_length = 1000
         return
         for read in self.bam.fetch():
-            # NOTE: does read group matter? Will I need to add RGs to the BAM?
             if read.get_tag('RG') not in self.readgroups:
                 continue
             if read.infer_query_length() > max_rl:
@@ -700,7 +696,6 @@ class Sample(object):
                       bam,
                       lib_info,
                       min_lib_prevalence):
-        # NOTE:changed this to account for BAMs without read groups
         try:
             name = bam.header['RG'][0]['SM']
         except KeyError:
@@ -742,25 +737,19 @@ class Sample(object):
                  bam,
                  num_samp,
                  min_lib_prevalence):
-        # NOTE: changed this as well
-        try:
-            name = bam.header['RG'][0]['SM']
-        except KeyError:
-            name = 'ont'
+        name = bam.header['RG'][0]['SM']
         rg_to_lib = {}
         lib_dict = {}
-        # ...and this
-        #for r in bam.header['RG']:
-            #try:
-            #    lib_name=r['LB']
-            #except KeyError, e:
-            #    lib_name=''
+        for r in bam.header['RG']:
+            try:
+                lib_name=r['LB']
+            except KeyError, e:
+                lib_name=''
 
             # add the new library
-        lib_name = 'ont'
-        if lib_name not in lib_dict:
-            new_lib = Library.from_bam(lib_name, bam, num_samp)
-            lib_dict[lib_name] = new_lib
+            if lib_name not in lib_dict:
+                new_lib = Library.from_bam(lib_name, bam, num_samp)
+                lib_dict[lib_name] = new_lib
         #rg_to_lib[r['ID']] = lib_dict[lib_name]
 
         return cls(name,
@@ -797,7 +786,7 @@ class Sample(object):
         weighted_mean_read_length = sum([(lib.read_length - 2 * min_aligned) * lib.prevalence for lib in self.lib_dict.values()])
         exp_seq_depth = (weighted_mean_read_length * self.bam_mapped) / genome_size
 
-        self.exp_seq_depth = 30 # exp_seq_depth
+        self.exp_seq_depth = exp_seq_depth
 
         return
 
@@ -886,22 +875,18 @@ class SamFragment(object):
         if read.reference_name != chrom:
             return False
         # ensure there is min_aligned on both sides of position
-        # NOTE: changed this for nanopore to not require exact match around min-aligned
-        # instead of exact match, we require only `cutoff` percent matches. This will need to be tuned.
-        # we also split the single check into a left and right call since we don't want one side to have
-        # a preponderance of mismatches.
-        # And, it should only be use if, e.g. a --nanopore flag is set.
+
+        # NOTE: BP and TS changed this for ONT. Don't require exact match around min-aligned;
+        # instead of exact match, we require only `cutoff_pct` matches. This will need to be tuned.
+        # We also split the single check into a left and right call since we don't want one side to have
+        # a preponderance of mismatches. In the future, should only be used if, e.g. a --nanopore flag is set.
 
         cutoff_pct = 0.95
-        #print>>sys.stderr, left, read.get_overlap(pos-min_aligned, pos)
-        
         
         if read.get_overlap(max(0, pos - min_aligned), pos) < cutoff_pct * min_aligned:
             return False
         if read.get_overlap(pos, pos + min_aligned) < cutoff_pct * min_aligned:
             return False
-        #if read.get_overlap(max(0, pos - min_aligned), pos + min_aligned) < 0.9 * 2 * min_aligned:
-        #    return False
         return True
 
     # returns boolean of whether the primary pair of a
@@ -1015,9 +1000,9 @@ class SplitRead(object):
     # NOTE: split read is not valid if it doesn't meet these characteristics!
     # check if passes QC, and populate with necessary info
     def is_valid(self,
-                 min_non_overlap = 20, #20
-                 min_indel = 50, #50
-                 max_unmapped_bases = 50): #50
+                 min_non_overlap = 20, 
+                 min_indel = 50, 
+                 max_unmapped_bases = 50): 
         # check for SA tag
         if not self.read.has_tag('SA'):
             # Include soft-clipped reads that didn't generate split-read alignments
@@ -1656,7 +1641,7 @@ def sv_genotype(bam_string,
                                                        o1_is_reverse, o2_is_reverse,
                                                        svtype, split_slop)
                     if all(not s for s in split_lr):
-                        # NOTE: with long reads (nanopore), we can get a read that spans the break
+                        # NOTE: with long reads (ONT), we can get a read that spans the break
                         # with a deletion that supports the alternate scattered with a few spurious matches.
                         #bases_aligned = read.get_overlap(posA, posB)
                         #bases_aligned = len(set(range(posA, posB)) - set(read.get_reference_positions()))
