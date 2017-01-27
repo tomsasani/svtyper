@@ -4,11 +4,11 @@ import pysam
 import json
 import argparse, sys, os.path
 import math, time, re
-from collections import Counter
+from collections import Counter, defaultdict
 from argparse import RawTextHelpFormatter
 
 __author__ = "Colby Chiang (colbychiang@wustl.edu)"
-__version__ = "v0.1.2"
+__version__ = "v0.1.1"
 
 # --------------------------------------
 # define functions
@@ -287,7 +287,38 @@ class Genotype(object):
 # ==================================================
 # BAM and JSON output
 # ==================================================
+def gather_pile(bam, chrom, left, right): 
+    freqs = defaultdict(lambda: defaultdict(int))
+    for pileupcolumn in bam.pileup(chrom, left, right):
+        if pileupcolumn.pos < left:
+            continue
+        elif pileupcolumn.pos > right:
+            break
+        for pileupread in pileupcolumn.pileups:
+            if pileupread.query_position is None:
+                continue
+            read_base = pileupread.alignment.query_sequence[pileupread.query_position]    
+            freqs[pileupcolumn.pos][read_base] += 1
+    
+    freq = []
+    for i in range(left, right): 
+        v = freqs[i]
+        if len(v) == 0:
+            freq.append(0)
+            continue
+        top = max(v.values())
+        freq.append(top / float(sum(v.values())))
 
+    # freq is the frequency of the most frequent base at each position.
+    # we assume that a high value is evidence for the reference.
+    return freq
+
+def breakpoint_flank_is_ref(freq):
+    # ref_freq percent of bases in pilupcolumn need to be a single base 
+    ref_freq = 0.8
+    ref_proportion = 0.8
+    return sum(f > ref_freq for f in freq) > ref_proportion * len(freq) 
+        
 # write read to BAM file, checking whether read is already written
 def write_alignment(read, bam, written_reads, is_alt=None):
     read.query_sequence = None
@@ -520,6 +551,7 @@ class Library(object):
 
         # get readgroups that comprise the library
         readgroups = []
+        # NOTE: changed this
         for r in bam.header['RG']:
             try:
                 in_lib = r['LB'] == lib_name
@@ -542,14 +574,16 @@ class Library(object):
 
     # calculate the library's prevalence in the BAM file
     def calc_lib_prevalence(self):
-        max_count = 100000
+        max_count = 10
         lib_counter = 0
         read_counter = 0
 
         for read in self.bam.fetch():
             if read_counter == max_count:
                 break
+            # NOTE: changed this
             if read.get_tag('RG') in self.readgroups:
+            #if 'ont' in self.readgroups:
                 lib_counter += 1
             read_counter += 1
 
@@ -559,8 +593,11 @@ class Library(object):
     def calc_read_length(self):
         max_rl = 0
         counter = 0
-        num_samp = 10000
+        num_samp = 10
+        self.read_length = 1000
+        return
         for read in self.bam.fetch():
+            # NOTE: does read group matter? Will I need to add RGs to the BAM?
             if read.get_tag('RG') not in self.readgroups:
                 continue
             if read.infer_query_length() > max_rl:
@@ -577,12 +614,17 @@ class Library(object):
         skip_counter = 0
         mads = 10
         ins_list = []
+        valueCounts = Counter()
+
+        self.hist = valueCounts
+        self.mean = 0
+        self.sd = 0
+        return
 
         # Each entry in valueCounts is a value, and its count is
         # the number of instances of that value observed in the dataset.
         # So valueCount[5] is the number of times 5 has been seen in the data.
-        valueCounts = Counter()
-        for read in self.bam.fetch():
+        for read in self.bam:
             if skip_counter < skip:
                 skip_counter += 1
                 continue
@@ -658,8 +700,11 @@ class Sample(object):
                       bam,
                       lib_info,
                       min_lib_prevalence):
-
-        name = bam.header['RG'][0]['SM']
+        # NOTE:changed this to account for BAMs without read groups
+        try:
+            name = bam.header['RG'][0]['SM']
+        except KeyError:
+            name = 'ont'
         num_samp = 0
         rg_to_lib = {}
         lib_dict = {}
@@ -697,22 +742,26 @@ class Sample(object):
                  bam,
                  num_samp,
                  min_lib_prevalence):
-
-        name = bam.header['RG'][0]['SM']
+        # NOTE: changed this as well
+        try:
+            name = bam.header['RG'][0]['SM']
+        except KeyError:
+            name = 'ont'
         rg_to_lib = {}
         lib_dict = {}
-
-        for r in bam.header['RG']:
-            try:
-                lib_name=r['LB']
-            except KeyError, e:
-                lib_name=''
+        # ...and this
+        #for r in bam.header['RG']:
+            #try:
+            #    lib_name=r['LB']
+            #except KeyError, e:
+            #    lib_name=''
 
             # add the new library
-            if lib_name not in lib_dict:
-                new_lib = Library.from_bam(lib_name, bam, num_samp)
-                lib_dict[lib_name] = new_lib
-            rg_to_lib[r['ID']] = lib_dict[lib_name]
+        lib_name = 'ont'
+        if lib_name not in lib_dict:
+            new_lib = Library.from_bam(lib_name, bam, num_samp)
+            lib_dict[lib_name] = new_lib
+        #rg_to_lib[r['ID']] = lib_dict[lib_name]
 
         return cls(name,
                    bam,
@@ -741,13 +790,14 @@ class Sample(object):
 
         return
 
+    # NOTE: just set this to 30? since we're only genotyping in "normal" spots
     # return the expected sequence coverage at any given base
     def set_exp_seq_depth(self, min_aligned):
         genome_size = float(sum(self.bam.lengths))
         weighted_mean_read_length = sum([(lib.read_length - 2 * min_aligned) * lib.prevalence for lib in self.lib_dict.values()])
         exp_seq_depth = (weighted_mean_read_length * self.bam_mapped) / genome_size
 
-        self.exp_seq_depth = exp_seq_depth
+        self.exp_seq_depth = 30 # exp_seq_depth
 
         return
 
@@ -829,17 +879,30 @@ class SamFragment(object):
                    read,
                    chrom, pos, ci,
                    min_aligned):
+        # NOTE: maybe here, we can scale the cutoff percentage as a function of
+        # the conference interval uncertainty.
         # check chromosome matching
         # Note: this step is kind of slow
         if read.reference_name != chrom:
             return False
-
         # ensure there is min_aligned on both sides of position
-        if read.get_overlap(max(0, pos - min_aligned), pos + min_aligned) < 2 * min_aligned:
+        # NOTE: changed this for nanopore to not require exact match around min-aligned
+        # instead of exact match, we require only `cutoff` percent matches. This will need to be tuned.
+        # we also split the single check into a left and right call since we don't want one side to have
+        # a preponderance of mismatches.
+        # And, it should only be use if, e.g. a --nanopore flag is set.
+
+        cutoff_pct = 0.95
+        #print>>sys.stderr, left, read.get_overlap(pos-min_aligned, pos)
+        
+        
+        if read.get_overlap(max(0, pos - min_aligned), pos) < cutoff_pct * min_aligned:
             return False
-
+        if read.get_overlap(pos, pos + min_aligned) < cutoff_pct * min_aligned:
+            return False
+        #if read.get_overlap(max(0, pos - min_aligned), pos + min_aligned) < 0.9 * 2 * min_aligned:
+        #    return False
         return True
-
 
     # returns boolean of whether the primary pair of a
     # fragment straddles a genomic point
@@ -923,6 +986,10 @@ class SplitRead(object):
         self.q2 = None
         self.is_soft_clip = False
 
+    def __repr__(self):
+        return "%s(%s:%d-%d)" % (self.query_name, self.read.query_name,
+                self.read.reference_start, self.read.reference_end)
+
     # the piece of each split alignemnt
     class SplitPiece(object):
         def __init__(self,
@@ -945,12 +1012,12 @@ class SplitRead(object):
 
         def set_reference_end(self, reference_end):
             self.reference_end = reference_end
-
+    # NOTE: split read is not valid if it doesn't meet these characteristics!
     # check if passes QC, and populate with necessary info
     def is_valid(self,
-                 min_non_overlap = 20,
-                 min_indel = 50,
-                 max_unmapped_bases = 50):
+                 min_non_overlap = 20, #20
+                 min_indel = 50, #50
+                 max_unmapped_bases = 50): #50
         # check for SA tag
         if not self.read.has_tag('SA'):
             # Include soft-clipped reads that didn't generate split-read alignments
@@ -1307,7 +1374,7 @@ def gather_reads(sample,
 
     for read in sample.bam.fetch(chrom,
                                  max(pos + ci[0] - fetch_flank, 0),
-                                 min(pos + ci[1] + fetch_flank, chrom_length)):
+                                 min(pos + ci[1] + fetch_flank + 1, chrom_length)):
         lib = sample.get_lib(read.get_tag('RG')) # get the read's library
         if (read.is_unmapped
             or read.is_duplicate
@@ -1327,6 +1394,23 @@ def gather_reads(sample,
 # ==================================================
 # Genotyping function
 # ==================================================
+
+def pnon_ref(posA, posB, read):
+    l, r = max(posA, read.reference_start), min(posB, read.reference_end)
+
+    non_ref_bases_inside_sv = len(set(range(l, r)) - set(read.get_reference_positions()))
+    if r - l == 0:
+        p_non_ref = 0
+    else:
+        p_non_ref = non_ref_bases_inside_sv / float(r - l)
+
+    if p_non_ref > 0.5:
+        if l == posA and r == posB:
+            return 2, 0
+        else:
+            return 1, 0
+    else:
+        return 0, 1 - p_non_ref
 
 def sv_genotype(bam_string,
                 vcf_in,
@@ -1391,7 +1475,7 @@ def sv_genotype(bam_string,
 
     # set variables for genotyping
     z = 3
-    split_slop = 3 # amount of slop around breakpoint to count splitters
+    split_slop = 20# amount of slop around breakpoint to count splitters
     in_header = True
     header = []
     breakend_dict = {} # cache to hold unmatched generic breakends for genotyping
@@ -1497,12 +1581,41 @@ def sv_genotype(bam_string,
             # grab batch of reads from both sides of breakpoint
             read_batch = {}
             read_batch = gather_reads(sample, chromA, posA, ciA, z, read_batch)
+            left_reads = len(read_batch)
             read_batch = gather_reads(sample, chromB, posB, ciB, z, read_batch)
+            right_reads = len(read_batch) - left_reads
 
+            if svtype == 'DEL' or svtype == 'DUP':
+
+                left_pile = gather_pile(sample.bam, chromA, posA - min_aligned, posA + min_aligned)
+                right_pile = gather_pile(sample.bam, chromB, posB - min_aligned, posB + min_aligned)
+
+                import numpy as np
+
+                most_frequent_pct = 0.8 #80
+
+                try:
+                    left_score = float(sum([x < most_frequent_pct for x in left_pile[min_aligned:]])) / sum([x < most_frequent_pct for x in left_pile[:min_aligned]])
+                except ZeroDivisionError:
+                    left_score = 0
+
+                try:
+                    right_score = sum([x < most_frequent_pct for x in right_pile[:min_aligned]]) / float(sum([x < most_frequent_pct for x in right_pile[min_aligned:]])) 
+                except ZeroDivisionError:
+                    right_score = 0
+            #print >>sys.stderr, left_score, right_score
+            else:
+                left_score, right_score = 1, 1
             # initialize counts to zero
             ref_span, alt_span = 0, 0
             ref_seq, alt_seq = 0, 0
             alt_clip = 0
+
+            if left_score >= 1.3 or right_score >= 1.3:
+                alt_seq += sum(l < most_frequent_pct for l in left_pile[min_aligned:]) / float(min_aligned) * left_reads 
+            #if right_score >=1.5:
+            #    alt_seq += sum(l < most_frequent_pct for l in right_pile[min_aligned:]) / float(min_aligned) * right_reads 
+    
 
             # ref_ciA = ciA
             # ref_ciB = ciB
@@ -1517,24 +1630,45 @@ def sv_genotype(bam_string,
                 # Check for split-read evidence
                 # -------------------------------------
 
+
                 # get reference sequences
                 for read in fragment.primary_reads:
-                    if (fragment.is_ref_seq(read, chromA, posA, ciA, min_aligned)
-                        or fragment.is_ref_seq(read, chromB, posB, ciB, min_aligned)):
+                    if fragment.is_ref_seq(read, chromA, posA, ciA, min_aligned) or fragment.is_ref_seq(read, chromB, posB, ciB, min_aligned):
+                        #p_reference = prob_mapq(read)
+                        #ref_seq += p_reference
+                        p_alt, p_ref = pnon_ref(posA, posB, read)
+                        alt_seq += p_alt
+                        ref_seq += p_ref
 
-                        p_reference = prob_mapq(read)
-                        ref_seq += p_reference
-
-                        read.set_tag('XV', 'R')
-                        write_fragment = True
+                        if p_ref > 0:
+                            read.set_tag('XV', 'R')
+                        if left_score < 1.3:
+                            write_fragment = True
 
                 # get non-reference split-read support
                 for split in fragment.split_reads:
+                    # NOTE: we skip this if we've already used the read above because we dont want it to be
+                    # ref and alt support. This should check if read is a single-end before doing this.
+                    if write_fragment: break
 
                     split_lr = split.is_split_straddle(chromA, posA, ciA,
                                                        chromB, posB, ciB,
                                                        o1_is_reverse, o2_is_reverse,
                                                        svtype, split_slop)
+                    if all(not s for s in split_lr):
+                        # NOTE: with long reads (nanopore), we can get a read that spans the break
+                        # with a deletion that supports the alternate scattered with a few spurious matches.
+                        #bases_aligned = read.get_overlap(posA, posB)
+                        #bases_aligned = len(set(range(posA, posB)) - set(read.get_reference_positions()))
+
+                        # we want the intersection of the read and the sv
+                        p_alt, p_ref = pnon_ref(posA, posB, read)
+                        ref_seq += p_ref
+                        alt_seq += p_alt
+                        write_fragment = True
+                        #if bases_aligned / float(posB - posA) > 0.3:
+                        continue
+
                     # p_alt = prob_mapq(split.query_left) * prob_mapq(split.query_right)
                     p_alt = (prob_mapq(split.query_left) * split_lr[0] + prob_mapq(split.query_right) * split_lr[1]) / 2.0
                     if split.is_soft_clip:
@@ -1650,8 +1784,8 @@ def sv_genotype(bam_string,
                 if var.info['SVTYPE'] == "DUP": is_dup = True
                 else: is_dup = False
                 alt_splitters = alt_seq + alt_clip
-                QR = int(split_weight * ref_seq) + int(disc_weight * ref_span)
-                QA = int(split_weight * alt_splitters) + int(disc_weight * alt_span)
+                QR = int(round(split_weight * ref_seq)) + int(round(disc_weight * ref_span))
+                QA = int(round(split_weight * alt_splitters)) + int(round(disc_weight * alt_span))
                 gt_lplist = bayes_gt(QR, QA, is_dup)
                 gt_idx = gt_lplist.index(max(gt_lplist))
 
@@ -1661,17 +1795,17 @@ def sv_genotype(bam_string,
 
                 # set the overall variant QUAL score and sample specific fields
                 var.genotype(sample.name).set_format('GL', ','.join(['%.0f' % x for x in gt_lplist]))
-                var.genotype(sample.name).set_format('DP', int(ref_seq + alt_seq + alt_clip + ref_span + alt_span))
-                var.genotype(sample.name).set_format('RO', int(ref_seq + ref_span))
-                var.genotype(sample.name).set_format('AO', int(alt_seq + alt_clip + alt_span))
+                var.genotype(sample.name).set_format('DP', int(round(ref_seq + alt_seq + alt_clip + ref_span + alt_span)))
+                var.genotype(sample.name).set_format('RO', int(round(ref_seq + ref_span)))
+                var.genotype(sample.name).set_format('AO', int(0.5 + alt_seq + alt_clip + alt_span))
                 var.genotype(sample.name).set_format('QR', QR)
                 var.genotype(sample.name).set_format('QA', QA)
                 # if detailed:
-                var.genotype(sample.name).set_format('RS', int(ref_seq))
-                var.genotype(sample.name).set_format('AS', int(alt_seq))
-                var.genotype(sample.name).set_format('ASC', int(alt_clip))
-                var.genotype(sample.name).set_format('RP', int(ref_span))
-                var.genotype(sample.name).set_format('AP', int(alt_span))
+                var.genotype(sample.name).set_format('RS', int(ref_seq + 0.5))
+                var.genotype(sample.name).set_format('AS', int(alt_seq + 0.5))
+                var.genotype(sample.name).set_format('ASC', int(alt_clip + 0.5))
+                var.genotype(sample.name).set_format('RP', int(ref_span + 0.5))
+                var.genotype(sample.name).set_format('AP', int(alt_span + 0.5))
                 try:
                     var.genotype(sample.name).set_format('AB', '%.2g' % (QA / float(QR + QA)))
                 except ZeroDivisionError:
@@ -1692,7 +1826,7 @@ def sv_genotype(bam_string,
                         phred_gq = 200
                     else:
                         phred_gq = abs(-10 * math.log(1 - (10**gt_lplist[gt_idx] / 10**gt_sum_log), 10))
-                    var.genotype(sample.name).set_format('GQ', int(phred_gq))
+                    var.genotype(sample.name).set_format('GQ', int(phred_gq + 0.5))
                     var.genotype(sample.name).set_format('SQ', sample_qual)
                     var.qual += sample_qual
                     if gt_idx == 1:
