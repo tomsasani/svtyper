@@ -901,7 +901,7 @@ class SamFragment(object):
         # as we don't want one end of the breakpoint to have a preponderance of mismatches.
         # And, in the future, this should only be use if, e.g. a --nanopore flag is set.
 
-        cutoff_pct = 0.95
+        cutoff_pct = 0.85
         #print>>sys.stderr, left, read.get_overlap(pos-min_aligned, pos)
         
         
@@ -1490,7 +1490,7 @@ def sv_genotype(bam_string,
 
     # set variables for genotyping
     z = 3
-    split_slop = 50 # amount of slop around breakpoint to count splitters
+    split_slop = 60 # amount of slop around breakpoint to count splitters
     in_header = True
     header = []
     breakend_dict = {} # cache to hold unmatched generic breakends for genotyping
@@ -1600,25 +1600,29 @@ def sv_genotype(bam_string,
             read_batch = gather_reads(sample, chromB, posB, ciB, z, read_batch)
             right_reads = len(read_batch) - left_reads
 
+            if svtype == 'DEL' or svtype == 'DUP':
 
-            left_pile = gather_pile(sample.bam, chromA, posA - min_aligned, posA + min_aligned)
-            right_pile = gather_pile(sample.bam, chromB, posB - min_aligned, posB + min_aligned)
+                left_pile = gather_pile(sample.bam, chromA, posA - min_aligned, posA + min_aligned)
+                right_pile = gather_pile(sample.bam, chromB, posB - min_aligned, posB + min_aligned)
 
-            import numpy as np
+                import numpy as np
 
-            most_frequent_pct = 0.8 #80
+                most_frequent_pct = 0.8 #80
 
-            try:
-                left_score = float(sum([x < most_frequent_pct for x in left_pile[min_aligned:]])) / sum([x < most_frequent_pct for x in left_pile[:min_aligned]])
-            except ZeroDivisionError:
-                    left_score = 0
 
-            try:
-                right_score = sum([x < most_frequent_pct for x in right_pile[:min_aligned]]) / float(sum([x < most_frequent_pct for x in right_pile[min_aligned:]])) 
-            except ZeroDivisionError:
-                right_score = 0
+                try:
+                    left_score = float(sum([x < most_frequent_pct for x in left_pile[min_aligned:]])) / sum([x < most_frequent_pct for x in left_pile[:min_aligned]])
+                except ZeroDivisionError:
+                    left_score = 1.5 #NOTE: work on this
+
+                try:
+                    right_score = sum([x < most_frequent_pct for x in right_pile[:min_aligned]]) / float(sum([x < most_frequent_pct for x in right_pile[min_aligned:]])) 
+                except ZeroDivisionError:
+                    right_score = 1.5 
             #print >>sys.stderr, left_score, right_score
             # initialize counts to zero
+            else:
+                left_score, right_score = 1,1
             ref_span, alt_span = 0, 0
             ref_seq, alt_seq = 0, 0
             alt_clip = 0
