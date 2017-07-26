@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import pysam
+import operator
 import json
 import argparse, sys, os.path
 import math, time, re
@@ -287,7 +288,7 @@ class Genotype(object):
 # ==================================================
 # BAM and JSON output
 # ==================================================
-def gather_pile(bam, chrom, left, right): 
+def gather_pile(bam, chrom, left, right, sv_start=False): 
     """
     Added by Brent Pedersen and Tom Sasani.
     Iterate over a pileup at every base from `left` to
@@ -311,6 +312,7 @@ def gather_pile(bam, chrom, left, right):
     freq = []
     for i in range(left, right): 
         v = freqs[i]
+        #print v
         if len(v) == 0:
             freq.append(0)
             continue
@@ -321,22 +323,6 @@ def gather_pile(bam, chrom, left, right):
     # we assume that a high value is evidence for the reference.
     return freq
 
-def breakpoint_flank_is_ref(freq):
-    """
-    Added by Brent Pedersen and Tom Sasani.
-    Used in conjunction with the output of `gather_pile`.
-    The output of `gather_pile` is a list of N frequencies, where
-    N = (`right` - `left`). This function counts the number of
-    elements in that list that exceed a frequency of 0.8, which we
-    assume is a high enough frequency to be evidence for the reference.
-    Thus, this function counts the number of positions at a breakpoint flank
-    that contain an excessive amount of mismatches. 
-    """
-    # ref_freq percent of bases in pilupcolumn need to be a single base 
-    ref_freq = 0.8
-    ref_proportion = 0.8
-    return sum(f > ref_freq for f in freq) > ref_proportion * len(freq) 
-        
 # write read to BAM file, checking whether read is already written
 def write_alignment(read, bam, written_reads, is_alt=None):
     read.query_sequence = None
@@ -598,7 +584,6 @@ class Library(object):
         for read in self.bam.fetch():
             if read_counter == max_count:
                 break
-            # NOTE: changed this
             if read.get_tag('RG') in self.readgroups:
                 lib_counter += 1
             read_counter += 1
@@ -613,7 +598,6 @@ class Library(object):
         self.read_length = 1000
         return
         for read in self.bam.fetch():
-            # NOTE: does read group matter? Will I need to add RGs to the BAM?
             if read.get_tag('RG') not in self.readgroups:
                 continue
             if read.infer_query_length() > max_rl:
@@ -884,33 +868,29 @@ class SamFragment(object):
                    read,
                    chrom, pos, ci,
                    min_aligned):
-        # NOTE: maybe here, we can scale the cutoff percentage as a function of
-        # the conference interval uncertainty.
         # check chromosome matching
         # Note: this step is kind of slow
         if read.reference_name != chrom:
             return False
         # ensure there is min_aligned on both sides of position
-
-        # Added by Brent Pedersen and Tom Sasani.
-        # Modified `is_ref_seq` method for nanopore to not 
-        # require read bases to exactly match around the left and right breakpoints
-        # of an SV. Instead of exact match, we require only `cutoff` percent 
-        # of the read bases to match. This will need to be tuned further in the future.
-        # We also split the single check into a left and right call, 
-        # as we don't want one end of the breakpoint to have a preponderance of mismatches.
-        # And, in the future, this should only be use if, e.g. a --nanopore flag is set.
-
-        cutoff_pct = 0.85
+        """
+        Added by Brent Pedersen and Tom Sasani.
+        Modified `is_ref_seq` method for nanopore to not 
+        require read bases to exactly match around the left and right breakpoints
+        of an SV. Instead of exact match, we require only `cut_off_pct` 
+        of the read bases to match. This will need to be tuned further in the future.
+        We also split the single check into a left and right call, 
+        as we don't want one end of the breakpoint to have a preponderance of mismatches.
+        And, in the future, this should only be use if, e.g. a --nanopore flag is set.
+        """
         #print>>sys.stderr, left, read.get_overlap(pos-min_aligned, pos)
-        
-        
-        if read.get_overlap(max(0, pos - min_aligned), pos) < cutoff_pct * min_aligned:
+     
+        cut_off_pct = 0.8
+
+        if read.get_overlap(max(0, pos - min_aligned), pos) < cut_off_pct * min_aligned:
             return False
-        if read.get_overlap(pos, pos + min_aligned) < cutoff_pct * min_aligned:
+        if read.get_overlap(pos, pos + min_aligned) < cut_off_pct * min_aligned:
             return False
-        #if read.get_overlap(max(0, pos - min_aligned), pos + min_aligned) < 0.9 * 2 * min_aligned:
-        #    return False
         return True
 
     # returns boolean of whether the primary pair of a
@@ -1409,7 +1389,11 @@ def pnon_ref(posA, posB, read):
     Added by Brent Pedersen and Tom Sasani.
     If an ONT alignment extends past an SV breakpoint,
     determine the proportion of bases within that 'bleed-through'
-    that are mismatches.
+    that are mismatches. Because the ends of SVs often overlap with
+    homopolymer stretches (which lead to gaps and deletions in the 
+    ONT alignments), this can be tuned to treat long stretches of
+    mismatches (due to homopolymers) as "ref" so that an otherwise
+    "reference" read is not discounted due to mismatches at the breakpoint.
     """
     l, r = max(posA, read.reference_start), min(posB, read.reference_end)
 
@@ -1605,20 +1589,22 @@ def sv_genotype(bam_string,
                 left_pile = gather_pile(sample.bam, chromA, posA - min_aligned, posA + min_aligned)
                 right_pile = gather_pile(sample.bam, chromB, posB - min_aligned, posB + min_aligned)
 
+
                 import numpy as np
 
-                most_frequent_pct = 0.8 #80
+                most_frequent_pct = 0.8
 
 
                 try:
                     left_score = float(sum([x < most_frequent_pct for x in left_pile[min_aligned:]])) / sum([x < most_frequent_pct for x in left_pile[:min_aligned]])
                 except ZeroDivisionError:
-                    left_score = 1.5 #NOTE: work on this
+                    left_score = 1.5
 
                 try:
                     right_score = sum([x < most_frequent_pct for x in right_pile[:min_aligned]]) / float(sum([x < most_frequent_pct for x in right_pile[min_aligned:]])) 
                 except ZeroDivisionError:
-                    right_score = 1.5 
+                    right_score = 1.5
+            
             #print >>sys.stderr, left_score, right_score
             # initialize counts to zero
             else:
@@ -1672,11 +1658,6 @@ def sv_genotype(bam_string,
                                                        o1_is_reverse, o2_is_reverse,
                                                        svtype, split_slop)
                     if all(not s for s in split_lr):
-                        # NOTE: with long reads (nanopore), we can get a read that spans the break
-                        # with a deletion that supports the alternate scattered with a few spurious matches.
-                        #bases_aligned = read.get_overlap(posA, posB)
-                        #bases_aligned = len(set(range(posA, posB)) - set(read.get_reference_positions()))
-
                         # we want the intersection of the read and the sv
                         p_alt, p_ref = pnon_ref(posA, posB, read)
                         ref_seq += p_ref
