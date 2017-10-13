@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import pysam
+import decimal
 import operator
 import json
 import argparse, sys, os.path
@@ -885,7 +886,7 @@ class SamFragment(object):
         """
         #print>>sys.stderr, left, read.get_overlap(pos-min_aligned, pos)
      
-        cut_off_pct = 0.8
+        cut_off_pct = 0.85
 
         if read.get_overlap(max(0, pos - min_aligned), pos) < cut_off_pct * min_aligned:
             return False
@@ -1348,7 +1349,7 @@ def is_primary(read):
 
 # get the non-phred-scaled mapq of a read
 def prob_mapq(read):
-    return 1 - 10 ** (-read.mapq / 10.0)
+    return float(1 - (decimal.Decimal(10) ** (-1 * decimal.Decimal(read.mapq) / decimal.Decimal(10))))
 
 # method to grab reads from region of interest in BAM file
 def gather_reads(sample,
@@ -1360,7 +1361,6 @@ def gather_reads(sample,
     # (max of mean + z standard devs over all of a sample's libraries)
     fetch_flank = sample.get_fetch_flank(z)
     chrom_length = sample.bam.lengths[sample.bam.gettid(chrom)]
-
     for read in sample.bam.fetch(chrom,
                                  max(pos + ci[0] - fetch_flank, 0),
                                  min(pos + ci[1] + fetch_flank + 1, chrom_length)):
@@ -1474,7 +1474,7 @@ def sv_genotype(bam_string,
 
     # set variables for genotyping
     z = 3
-    split_slop = 60 # amount of slop around breakpoint to count splitters
+    split_slop = 75 # amount of slop around breakpoint to count splitters
     in_header = True
     header = []
     breakend_dict = {} # cache to hold unmatched generic breakends for genotyping
@@ -1562,8 +1562,11 @@ def sv_genotype(bam_string,
             posA = var.pos
             posB = int(var.get_info('END'))
             # confidence intervals
-            ciA = map(int, var.info['CIPOS'].split(','))
-            ciB = map(int, var.info['CIEND'].split(','))
+            try:
+                ciA = map(int, var.info['CIPOS'].split(','))
+                ciB = map(int, var.info['CIEND'].split(','))
+            except KeyError:
+                ciA, ciB = [0, 0], [0, 0]
             if svtype == 'DEL':
                 var_length = posB - posA
                 o1_is_reverse, o2_is_reverse =  False, True
