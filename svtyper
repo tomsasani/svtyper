@@ -313,7 +313,6 @@ def gather_pile(bam, chrom, left, right, sv_start=False):
     freq = []
     for i in range(left, right): 
         v = freqs[i]
-        #print v
         if len(v) == 0:
             freq.append(0)
             continue
@@ -882,9 +881,7 @@ class SamFragment(object):
         of the read bases to match. This will need to be tuned further in the future.
         We also split the single check into a left and right call, 
         as we don't want one end of the breakpoint to have a preponderance of mismatches.
-        And, in the future, this should only be use if, e.g. a --nanopore flag is set.
         """
-        #print>>sys.stderr, left, read.get_overlap(pos-min_aligned, pos)
      
         cut_off_pct = 0.85
 
@@ -1389,11 +1386,7 @@ def pnon_ref(posA, posB, read):
     Added by Brent Pedersen and Tom Sasani.
     If an ONT alignment extends past an SV breakpoint,
     determine the proportion of bases within that 'bleed-through'
-    that are mismatches. Because the ends of SVs often overlap with
-    homopolymer stretches (which lead to gaps and deletions in the 
-    ONT alignments), this can be tuned to treat long stretches of
-    mismatches (due to homopolymers) as "ref" so that an otherwise
-    "reference" read is not discounted due to mismatches at the breakpoint.
+    that are mismatches.
     """
     l, r = max(posA, read.reference_start), min(posB, read.reference_end)
 
